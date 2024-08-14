@@ -1,0 +1,5 @@
+package messages
+
+type NatsBackConn interface {
+	Close()
+}
