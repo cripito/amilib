@@ -2,7 +2,7 @@ package amilib
 
 type Config interface {
 	Get() (*ConfigData, error)
-	Put() error
+	Put(cfg *ConfigData) error
 	Delete() error
 }
 
@@ -20,7 +20,7 @@ func (c ConfigData) Get() (*ConfigData, error) {
 	return &c, nil
 }
 
-func (c ConfigData) Put() error {
+func (c ConfigData) Put(*ConfigData) error {
 	return nil
 }
 

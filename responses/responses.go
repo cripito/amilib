@@ -1,7 +1,5 @@
 package responses
 
-import "github.com/cripito/amilib"
-
 type Response interface {
 	// GetPayload returns the content of this Response
 	GetPayload() string
@@ -41,7 +39,7 @@ type ResponseData struct {
 	Node string `json:"asterisk_id,omitempty"`
 
 	// Timestamp indicates the time this Response was generated
-	Timestamp amilib.DateTime `json:"timestamp,omitempty"`
+	Timestamp string `json:"timestamp,omitempty"`
 
 	// Type is the type name of this response //Success-Error
 	Type ResponseType `json:"type"`
