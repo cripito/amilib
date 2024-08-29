@@ -2,12 +2,14 @@ syntax = "proto3";
 
 option go_package = "./event";
 
+import "github.com/cripito/amilib/protos/node.proto";
+
 message Event {
     string ID = 1;
     string PayLoad = 2;
-    string Node = 3;
+
+    Node Node = 3;
+
     string TimeStamp = 4;
     string Type = 5;
 }
-
-

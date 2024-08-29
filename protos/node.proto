@@ -1,0 +1,16 @@
+
+syntax = "proto3";
+
+option go_package = "./node";
+
+message Node {
+    string ID = 1; 
+    string IP = 2;
+    NodeType type = 3;
+}
+
+enum NodeType {
+  NODE_TYPE_UNSPECIFIED = 0;
+  NODE_TYPE_CLIENT = 1;
+  NONE_TYPE_PROXY = 2;
+}

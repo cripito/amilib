@@ -183,9 +183,9 @@ func (ami *AMIClient) runAnnouncementFunc(ctx context.Context, fcallback nats.Ms
 }
 
 func (ami *AMIClient) runRequestFunc(ctx context.Context, fcallback nats.MsgHandler) {
-	logs.TLogger.Debug().Msgf("subscribing to %s", ami.Subjects("request"))
+	logs.TLogger.Debug().Msgf("subscribing to %s", ami.serverName)
 
-	tSub, err := ami.mbus.Subscribe(ami.MBPostfix + "request" + ami.TopicSeparator + , fcallback)
+	tSub, err := ami.mbus.Subscribe(ami.serverName, fcallback)
 	if err != nil {
 		logs.TLogger.Error().Msg(err.Error())
 
@@ -278,18 +278,17 @@ func (ami *AMIClient) send(ctx context.Context, req *request.Request, nodeid str
 	return nil
 }
 
-func (ami *AMIClient) createRequest(action string, id string, v ...interface{}) (request.Request, error) {
+func (ami *AMIClient) createRequest(action string, id string, v ...interface{}) (*request.Request, error) {
 
-
-	b, err := command(action, actionID, settings)
+	b, err := command(action, id, v)
 	if err != nil {
 		return nil, err
 	}
 
 	p := &request.Request{
-		ID:      actionID,
-		Type:   action,
-		Node:    ami.Node.NodeID,
+		ID:      id,
+		Type:    action,
+		Node:    ami.Node,
 		Payload: string(b),
 	}
 
@@ -299,7 +298,7 @@ func (ami *AMIClient) createRequest(action string, id string, v ...interface{}) 
 func (ami *AMIClient) CoreSettings(ctx context.Context, actionID string, node string) (*responses.ResponseData, error) {
 	var settings = struct{}{}
 
-	p, err := ami.createRequest("coresettings", actionID)
+	p, err := ami.createRequest("coresettings", actionID, settings)
 	if err != nil {
 		return nil, err
 	}
