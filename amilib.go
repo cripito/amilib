@@ -3,7 +3,7 @@ package amilib
 import (
 	"context"
 
-	"github.com/cripito/amilib/request"
+	amitools "github.com/cripito/amilib/tools"
 	"github.com/rs/zerolog"
 )
 
@@ -22,10 +22,10 @@ type AMIClientInterface interface {
 }
 
 type RequestHandler interface {
-	CreateRequest(*request.Request)
+	CreateRequest(*amitools.Request)
 }
 
-type RequestHandlerFunc func(*request.Request) error
+type RequestHandlerFunc func(*amitools.Request) error
 
 type EventType string
 

@@ -10,10 +10,9 @@ import (
 	"time"
 
 	"github.com/cripito/amilib/logs"
-	"github.com/cripito/amilib/node"
-	"github.com/cripito/amilib/request"
 	"github.com/cripito/amilib/responses"
 	"github.com/cripito/amilib/rid"
+	amitools "github.com/cripito/amilib/tools"
 	"github.com/nats-io/nats.go"
 )
 
@@ -35,7 +34,7 @@ type OptionFunc func(*AMIClient)
 
 type AMIClient struct {
 	// List of natsubjects the system will process
-	Node *node.Node
+	Node *amitools.Node
 
 	subsSujects []string
 
@@ -85,9 +84,8 @@ func NewAmiClient(ctx context.Context, opts ...OptionFunc) *AMIClient {
 		TopicSeparator: ".",
 		MBPostfix:      ".*",
 		serverName:     "ami.client.",
-		Node: &node.Node{
-			NodeIP: node.WHOCARES,
-			Type:   node.Client,
+		Node: &amitools.Node{
+			Type: amitools.NodeType_UNSPECIFIED,
 		},
 	}
 
@@ -274,18 +272,18 @@ func command(action string, id string, v ...interface{}) ([]byte, error) {
 	}{Action: action, ID: id, V: v})
 }
 
-func (ami *AMIClient) send(ctx context.Context, req *request.Request, nodeid string) *responses.ResponseData {
+func (ami *AMIClient) send(ctx context.Context, req *amitools.Request, nodeid string) *responses.ResponseData {
 	return nil
 }
 
-func (ami *AMIClient) createRequest(action string, id string, v ...interface{}) (*request.Request, error) {
+func (ami *AMIClient) createRequest(action string, id string, v ...interface{}) (*amitools.Request, error) {
 
 	b, err := command(action, id, v)
 	if err != nil {
 		return nil, err
 	}
 
-	p := &request.Request{
+	p := &amitools.Request{
 		ID:      id,
 		Type:    action,
 		Node:    ami.Node,

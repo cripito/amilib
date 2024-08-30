@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+option go_package = "./tools";
+
+message Node {
+    string ID = 1; 
+    string IP = 2;
+    string Name = 3;
+    NodeType type = 4;
+}
+
+enum NodeType {
+  UNSPECIFIED = 0;
+  CLIENT = 1;
+  PROXY = 2;
+}
+
+message Request {
+    string ID = 1;
+    string Payload = 2;
+
+    Node Node = 3;
+
+    string TimeStamp = 4;
+    string Type = 5;
+}
+
+message Event {
+    string ID = 1;
+    string PayLoad = 2;
+
+    Node Node = 3;
+
+    string TimeStamp = 4;
+    string Type = 5;
+}
