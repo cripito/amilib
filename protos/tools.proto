@@ -2,11 +2,15 @@ syntax = "proto3";
 
 option go_package = "./tools";
 
+import "google/protobuf/timestamp.proto";
+
 message Node {
     string ID = 1; 
     string IP = 2;
     string Name = 3;
     NodeType type = 4;
+    google.protobuf.Timestamp LastPing  = 5;
+    StatusType Status = 6;
 }
 
 enum NodeType {
@@ -15,13 +19,20 @@ enum NodeType {
   PROXY = 2;
 }
 
+enum StatusType {
+    UNKNOWN = 0;
+    DOWN = 1;
+    UP = 2;
+}
+
 message Request {
     string ID = 1;
     string Payload = 2;
 
     Node Node = 3;
 
-    string TimeStamp = 4;
+    google.protobuf.Timestamp TimeStamp = 4;
+
     string Type = 5;
 }
 
@@ -31,6 +42,7 @@ message Event {
 
     Node Node = 3;
 
-    string TimeStamp = 4;
+    google.protobuf.Timestamp TimeStamp = 4;
+    
     string Type = 5;
 }

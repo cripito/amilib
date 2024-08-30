@@ -94,11 +94,22 @@ func NewAmiClient(ctx context.Context, opts ...OptionFunc) *AMIClient {
 		opt(ami)
 	}
 
-	ami.Node.NodeID, err = rid.New(ami.serverName)
+	if ami.serverName == "" {
+		ami.serverName = "prx"
+	}
+
+	ami.Node.ID, err = rid.New(ami.serverName)
 	if err != nil {
 		logs.TLogger.Error().Msg(err.Error())
 
 		return nil
+	}
+
+	if ami.Node.Type == amitools.NodeType_PROXY {
+		ami.Node.Name = ami.MBPrefix + "proxy" + ami.TopicSeparator + ami.Node.ID
+	} else {
+		ami.Node.Name = ami.MBPrefix + "client" + ami.TopicSeparator + ami.Node.ID
+		ami.Node.Type = amitools.NodeType_CLIENT
 	}
 
 	return ami
@@ -122,6 +133,12 @@ func WithPrefix(prefix string) OptionFunc {
 	}
 }
 
+func (ami *AMIClient) WithType(t amitools.NodeType) OptionFunc {
+	return func(c *AMIClient) {
+		c.Node.Type = t
+	}
+}
+
 func (ami *AMIClient) GetNats() *nats.Conn {
 	return ami.mbus
 }
@@ -129,10 +146,10 @@ func (ami *AMIClient) GetNats() *nats.Conn {
 func (ami *AMIClient) natsConnection(ctx context.Context) error {
 	var err error
 
-	logs.TLogger.Debug().Msgf("Connecting to NATS using %s with name %s", ami.mbusURI, ami.Node.NodeID)
+	logs.TLogger.Debug().Msgf("Connecting to NATS using %s with name %s", ami.mbusURI, ami.Node.ID)
 
 	ami.mbus, err = nats.Connect(ami.mbusURI,
-		nats.Name(ami.Node.NodeID),
+		nats.Name(ami.Node.Name),
 		nats.DiscoveredServersHandler(func(nc *nats.Conn) {
 			logs.TLogger.Debug().Msgf("Known servers: %v", nc.Servers())
 			logs.TLogger.Debug().Msgf("Discovered servers: %v", nc.DiscoveredServers())
@@ -162,14 +179,14 @@ func (ami *AMIClient) natsConnection(ctx context.Context) error {
 	return nil
 }
 
-func (ami *AMIClient) Subjects(topic string) string {
-	return fmt.Sprintf("%s%s%s", ami.MBPrefix, topic, ami.MBPostfix)
+func (ami *AMIClient) Subjects(topic string, id string) string {
+	return fmt.Sprintf("%s%s%s%s", ami.MBPrefix, topic, ami.TopicSeparator, id)
 
 }
 
 func (ami *AMIClient) runAnnouncementFunc(ctx context.Context, fcallback nats.MsgHandler) {
-	logs.TLogger.Debug().Msgf("subscribing to %s", ami.Subjects("announce"))
-	tSub, err := ami.mbus.Subscribe(ami.Subjects("announce"), fcallback)
+	logs.TLogger.Debug().Msgf("subscribing to %s", ami.Subjects("announce", "*"))
+	tSub, err := ami.mbus.Subscribe(ami.Subjects("announce", "*"), fcallback)
 	if err != nil {
 		logs.TLogger.Error().Msg(err.Error())
 
@@ -177,13 +194,13 @@ func (ami *AMIClient) runAnnouncementFunc(ctx context.Context, fcallback nats.Ms
 	}
 
 	ami.subs = append(ami.subs, tSub)
-	ami.subsSujects = append(ami.subsSujects, ami.Subjects("announce"))
+	ami.subsSujects = append(ami.subsSujects, ami.Subjects("announce", "*"))
 }
 
 func (ami *AMIClient) runRequestFunc(ctx context.Context, fcallback nats.MsgHandler) {
-	logs.TLogger.Debug().Msgf("subscribing to %s", ami.serverName)
+	logs.TLogger.Debug().Msgf("subscribing to %s", ami.Subjects("requests", ami.Node.ID))
 
-	tSub, err := ami.mbus.Subscribe(ami.serverName, fcallback)
+	tSub, err := ami.mbus.Subscribe(ami.Subjects("requests", ami.Node.ID), fcallback)
 	if err != nil {
 		logs.TLogger.Error().Msg(err.Error())
 
@@ -191,13 +208,13 @@ func (ami *AMIClient) runRequestFunc(ctx context.Context, fcallback nats.MsgHand
 	}
 
 	ami.subs = append(ami.subs, tSub)
-	ami.subsSujects = append(ami.subsSujects, ami.Subjects("request"))
+	ami.subsSujects = append(ami.subsSujects, ami.Subjects("requests", "*"))
 }
 
 func (ami *AMIClient) runEventFunc(ctx context.Context, fcallback nats.MsgHandler) {
-	logs.TLogger.Debug().Msgf("subscribing to %s", ami.Subjects("events"))
+	logs.TLogger.Debug().Msgf("subscribing to %s", ami.Subjects("events", "*"))
 
-	tSub, err := ami.mbus.Subscribe(ami.Subjects("events"), fcallback)
+	tSub, err := ami.mbus.Subscribe(ami.Subjects("events", "*"), fcallback)
 	if err != nil {
 		logs.TLogger.Error().Msg(err.Error())
 
@@ -205,7 +222,7 @@ func (ami *AMIClient) runEventFunc(ctx context.Context, fcallback nats.MsgHandle
 	}
 
 	ami.subs = append(ami.subs, tSub)
-	ami.subsSujects = append(ami.subsSujects, ami.Subjects("events"))
+	ami.subsSujects = append(ami.subsSujects, ami.Subjects("events", "*"))
 }
 
 func (ami *AMIClient) SetAnnouceHandler(fcallback nats.MsgHandler) {

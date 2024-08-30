@@ -1,5 +1,9 @@
 package responses
 
+import (
+	amitools "github.com/cripito/amilib/tools"
+)
+
 type Response interface {
 	// GetPayload returns the content of this Response
 	GetPayload() string
@@ -36,7 +40,7 @@ type ResponseData struct {
 	PayLoad string `json:"payload,omitempty"`
 
 	// Node indicates the unique identifier of the source Asterisk box for this Response
-	Node string `json:"asterisk_id,omitempty"`
+	Node *amitools.Node
 
 	// Timestamp indicates the time this Response was generated
 	Timestamp string `json:"timestamp,omitempty"`
@@ -58,7 +62,7 @@ func (e *ResponseData) GetType() ResponseType {
 }
 
 // GetNode gets the node ID of the source Asterisk instance
-func (e *ResponseData) GetNode() string {
+func (e *ResponseData) GetNode() *amitools.Node {
 	return e.Node
 }
 

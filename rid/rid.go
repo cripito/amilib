@@ -18,5 +18,5 @@ func New(kind string) (string, error) {
 		return "", err
 	}
 
-	return kind + "." + strings.ToLower(ulIDvalue.String()), nil
+	return kind + "-" + strings.ToLower(ulIDvalue.String()), nil
 }
