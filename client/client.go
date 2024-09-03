@@ -14,6 +14,7 @@ import (
 	"github.com/cripito/amilib/rid"
 	amitools "github.com/cripito/amilib/tools"
 	"github.com/nats-io/nats.go"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -65,14 +66,14 @@ type AMIClient struct {
 
 	shutdown chan os.Signal
 
+	nodelist map[string]*amitools.Node
+
 	natsfuncHandlerAnnouncement nats.MsgHandler
 	natsfuncHandlerRequest      nats.MsgHandler
 	natsfuncHandlerEvents       nats.MsgHandler
 }
 
 func NewAmiClient(ctx context.Context, opts ...OptionFunc) *AMIClient {
-
-	var err error
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -87,6 +88,7 @@ func NewAmiClient(ctx context.Context, opts ...OptionFunc) *AMIClient {
 		Node: &amitools.Node{
 			Type: amitools.NodeType_UNSPECIFIED,
 		},
+		nodelist: make(map[string]*amitools.Node),
 	}
 
 	// Load explicit configurations
@@ -98,19 +100,7 @@ func NewAmiClient(ctx context.Context, opts ...OptionFunc) *AMIClient {
 		ami.serverName = "prx"
 	}
 
-	ami.Node.ID, err = rid.New(ami.serverName)
-	if err != nil {
-		logs.TLogger.Error().Msg(err.Error())
-
-		return nil
-	}
-
-	if ami.Node.Type == amitools.NodeType_PROXY {
-		ami.Node.Name = ami.MBPrefix + "proxy" + ami.TopicSeparator + ami.Node.ID
-	} else {
-		ami.Node.Name = ami.MBPrefix + "client" + ami.TopicSeparator + ami.Node.ID
-		ami.Node.Type = amitools.NodeType_CLIENT
-	}
+	ami.setNode()
 
 	return ami
 }
@@ -133,7 +123,7 @@ func WithPrefix(prefix string) OptionFunc {
 	}
 }
 
-func (ami *AMIClient) WithType(t amitools.NodeType) OptionFunc {
+func WithType(t amitools.NodeType) OptionFunc {
 	return func(c *AMIClient) {
 		c.Node.Type = t
 	}
@@ -141,6 +131,40 @@ func (ami *AMIClient) WithType(t amitools.NodeType) OptionFunc {
 
 func (ami *AMIClient) GetNats() *nats.Conn {
 	return ami.mbus
+}
+
+func (ami *AMIClient) GetNode() *amitools.Node {
+	return ami.Node
+}
+
+func (ami *AMIClient) setNode() error {
+	var err error
+
+	prefix := ""
+	if ami.Node.Type == amitools.NodeType_PROXY {
+		prefix = "prx"
+	} else {
+		prefix = "cli"
+	}
+
+	ami.Node.ID, err = rid.New(prefix)
+	if err != nil {
+		logs.TLogger.Error().Msg(err.Error())
+
+		return err
+	}
+
+	if ami.Node.Type == amitools.NodeType_PROXY {
+		ami.Node.Name = ami.MBPrefix + "proxy" + ami.TopicSeparator + ami.Node.ID
+
+	} else {
+		ami.Node.Name = ami.MBPrefix + "client" + ami.TopicSeparator + ami.Node.ID
+		ami.Node.Type = amitools.NodeType_CLIENT
+	}
+
+	ami.nodelist[ami.Node.ID] = ami.Node
+
+	return nil
 }
 
 func (ami *AMIClient) natsConnection(ctx context.Context) error {
@@ -177,6 +201,43 @@ func (ami *AMIClient) natsConnection(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func evtHandler(msg *nats.Msg) {
+
+	evt := &amitools.Event{}
+
+	err := proto.Unmarshal(msg.Data, evt)
+	if err != nil {
+		logs.TLogger.Error().Msgf(err.Error())
+
+		return
+	}
+	logs.TLogger.Debug().Msgf("GOT %+v", evt)
+}
+
+func (ami *AMIClient) requestHandler(msg *nats.Msg) {
+	req := &amitools.Request{}
+
+	err := proto.Unmarshal(msg.Data, req)
+	if err != nil {
+		logs.TLogger.Error().Msgf(err.Error())
+
+		return
+	}
+	logs.TLogger.Debug().Msgf("GOT %+v", req)
+}
+
+func (ami *AMIClient) announceHandler(msg *nats.Msg) {
+	node := &amitools.Node{}
+
+	err := proto.Unmarshal(msg.Data, node)
+	if err != nil {
+		logs.TLogger.Error().Msgf(err.Error())
+
+		return
+	}
+	logs.TLogger.Debug().Msgf("GOT %+v", node)
 }
 
 func (ami *AMIClient) Subjects(topic string, id string) string {
@@ -250,6 +311,11 @@ func (ami *AMIClient) Listen(ctx context.Context) error {
 		return err
 	}
 
+	if ami.Node.Type != amitools.NodeType_PROXY {
+		ami.SetAnnouceHandler(ami.announceHandler)
+		ami.SetRequestHandler(ami.requestHandler)
+	}
+
 	if ami.natsfuncHandlerAnnouncement != nil {
 		ami.runAnnouncementFunc(context.Background(), ami.natsfuncHandlerAnnouncement)
 	}
@@ -289,7 +355,7 @@ func command(action string, id string, v ...interface{}) ([]byte, error) {
 	}{Action: action, ID: id, V: v})
 }
 
-func (ami *AMIClient) send(ctx context.Context, req *amitools.Request, nodeid string) *responses.ResponseData {
+func (ami *AMIClient) send(ctx context.Context, req *amitools.Request, node *amitools.Node) *responses.ResponseData {
 	return nil
 }
 
@@ -310,7 +376,7 @@ func (ami *AMIClient) createRequest(action string, id string, v ...interface{}) 
 	return p, nil
 }
 
-func (ami *AMIClient) CoreSettings(ctx context.Context, actionID string, node string) (*responses.ResponseData, error) {
+func (ami *AMIClient) CoreSettings(ctx context.Context, actionID string, node *amitools.Node) (*responses.ResponseData, error) {
 	var settings = struct{}{}
 
 	p, err := ami.createRequest("coresettings", actionID, settings)

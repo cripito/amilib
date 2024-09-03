@@ -3,6 +3,7 @@ module github.com/cripito/amilib
 go 1.22.5
 
 require (
+	github.com/lrita/cmap v0.0.0-20231108122212-cb084a67f554
 	github.com/nats-io/nats.go v1.37.0
 	github.com/oklog/ulid/v2 v2.1.0
 	github.com/rs/zerolog v1.33.0
