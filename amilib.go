@@ -21,10 +21,6 @@ type AMIClientInterface interface {
 	Listen(ctx context.Context) error
 }
 
-type RequestHandler interface {
-	CreateRequest(*amitools.Request)
-}
-
 type RequestHandlerFunc func(*amitools.Request) error
 
 type EventType string

@@ -2,10 +2,13 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/signal"
+	"reflect"
+	"sync"
 	"syscall"
 	"time"
 
@@ -14,7 +17,6 @@ import (
 	"github.com/cripito/amilib/rid"
 	amitools "github.com/cripito/amilib/tools"
 	"github.com/nats-io/nats.go"
-	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -34,11 +36,17 @@ type Options struct {
 type OptionFunc func(*AMIClient)
 
 type AMIClient struct {
+
+	//Request
+	requests map[string]*amitools.Request
+
 	// List of natsubjects the system will process
 	Node *amitools.Node
 
+	//Nats subjects
 	subsSujects []string
 
+	//nats subscriptions
 	subs []*nats.Subscription
 
 	// MBPrefix is the string which should be prepended to all Nats subjects, sending and receiving.
@@ -66,12 +74,26 @@ type AMIClient struct {
 
 	shutdown chan os.Signal
 
+	mu sync.Mutex
+
 	nodelist map[string]*amitools.Node
 
-	natsfuncHandlerAnnouncement nats.MsgHandler
-	natsfuncHandlerRequest      nats.MsgHandler
-	natsfuncHandlerEvents       nats.MsgHandler
+	amiRequestHandler AMIRequestHandler
 }
+
+var (
+	registeredHandlers sync.Map
+)
+
+func init() {
+	registeredHandlers = sync.Map{}
+}
+
+type key[TRequest any, TResult any] struct{}
+
+type RequestHandler[TRequest any, TResult any] func(req TRequest) (TResult, error)
+
+type AMIRequestHandler func(req *amitools.Request) (*amitools.Request, error)
 
 func NewAmiClient(ctx context.Context, opts ...OptionFunc) *AMIClient {
 
@@ -88,6 +110,7 @@ func NewAmiClient(ctx context.Context, opts ...OptionFunc) *AMIClient {
 		Node: &amitools.Node{
 			Type: amitools.NodeType_UNSPECIFIED,
 		},
+		requests: make(map[string]*amitools.Request),
 		nodelist: make(map[string]*amitools.Node),
 	}
 
@@ -103,6 +126,10 @@ func NewAmiClient(ctx context.Context, opts ...OptionFunc) *AMIClient {
 	ami.setNode()
 
 	return ami
+}
+
+func (s *AMIClient) SetAmiRequestHandler(fcall AMIRequestHandler) {
+	s.amiRequestHandler = fcall
 }
 
 func WithNatsUri(uri string) OptionFunc {
@@ -156,13 +183,34 @@ func (ami *AMIClient) setNode() error {
 
 	if ami.Node.Type == amitools.NodeType_PROXY {
 		ami.Node.Name = ami.MBPrefix + "proxy" + ami.TopicSeparator + ami.Node.ID
+		ami.Node.IP = "ip"
 
 	} else {
 		ami.Node.Name = ami.MBPrefix + "client" + ami.TopicSeparator + ami.Node.ID
 		ami.Node.Type = amitools.NodeType_CLIENT
 	}
 
+	ami.Node.Status = amitools.StatusType_UNKNOWN
+
 	ami.nodelist[ami.Node.ID] = ami.Node
+
+	return nil
+}
+
+func (ami *AMIClient) getNodeByID(id string) *amitools.Node {
+	if node, found := ami.nodelist[id]; found {
+		return node
+	} else {
+		return nil
+	}
+}
+
+func (ami *AMIClient) GetNodeByIP(ip string) *amitools.Node {
+	for _, node := range ami.nodelist {
+		if node.IP == ip {
+			return node
+		}
+	}
 
 	return nil
 }
@@ -203,99 +251,107 @@ func (ami *AMIClient) natsConnection(ctx context.Context) error {
 	return nil
 }
 
-func evtHandler(msg *nats.Msg) {
-
-	evt := &amitools.Event{}
-
-	err := proto.Unmarshal(msg.Data, evt)
-	if err != nil {
-		logs.TLogger.Error().Msgf(err.Error())
-
-		return
-	}
-	logs.TLogger.Debug().Msgf("GOT %+v", evt)
-}
-
-func (ami *AMIClient) requestHandler(msg *nats.Msg) {
-	req := &amitools.Request{}
-
-	err := proto.Unmarshal(msg.Data, req)
-	if err != nil {
-		logs.TLogger.Error().Msgf(err.Error())
-
-		return
-	}
-	logs.TLogger.Debug().Msgf("GOT %+v", req)
-}
-
 func (ami *AMIClient) announceHandler(msg *nats.Msg) {
 	node := &amitools.Node{}
 
-	err := proto.Unmarshal(msg.Data, node)
+	err := json.Unmarshal(msg.Data, node)
 	if err != nil {
 		logs.TLogger.Error().Msgf(err.Error())
 
 		return
 	}
-	logs.TLogger.Debug().Msgf("GOT %+v", node)
+
+	inode := ami.getNodeByID(node.ID)
+	if inode != nil {
+		inode.Status = node.Status
+		inode.LastPing = node.LastPing
+	} else {
+		ami.nodelist[node.ID] = node
+	}
+
 }
 
 func (ami *AMIClient) Subjects(topic string, id string) string {
 	return fmt.Sprintf("%s%s%s%s", ami.MBPrefix, topic, ami.TopicSeparator, id)
-
 }
 
-func (ami *AMIClient) runAnnouncementFunc(ctx context.Context, fcallback nats.MsgHandler) {
-	logs.TLogger.Debug().Msgf("subscribing to %s", ami.Subjects("announce", "*"))
-	tSub, err := ami.mbus.Subscribe(ami.Subjects("announce", "*"), fcallback)
-	if err != nil {
-		logs.TLogger.Error().Msg(err.Error())
+func (ami *AMIClient) GetNodes() map[string]*amitools.Node {
+	return ami.nodelist
+}
 
-		return
+func remove(slice []*nats.Subscription, s int) []*nats.Subscription {
+	return append(slice[:s], slice[s+1:]...)
+}
+
+func (ami *AMIClient) UnSubscribe(sub *nats.Subscription) error {
+	if sub != nil {
+		for i, tsub := range ami.subs {
+			if tsub == sub {
+				ami.subs = remove(ami.subs, i)
+			}
+		}
+
+		return sub.Unsubscribe()
 	}
 
-	ami.subs = append(ami.subs, tSub)
-	ami.subsSujects = append(ami.subsSujects, ami.Subjects("announce", "*"))
+	return errors.New("nil subscription")
 }
 
-func (ami *AMIClient) runRequestFunc(ctx context.Context, fcallback nats.MsgHandler) {
-	logs.TLogger.Debug().Msgf("subscribing to %s", ami.Subjects("requests", ami.Node.ID))
+func (ami *AMIClient) Subscribe(evt *amitools.Event, node *amitools.Node, cb nats.MsgHandler) (*nats.Subscription, error) {
 
-	tSub, err := ami.mbus.Subscribe(ami.Subjects("requests", ami.Node.ID), fcallback)
-	if err != nil {
-		logs.TLogger.Error().Msg(err.Error())
+	var sub *nats.Subscription
+	var err error
 
-		return
+	var subject string = ami.MBPrefix + "events" + ami.TopicSeparator + "*"
+	if evt != nil {
+		subject = ami.MBPrefix + "events" + ami.TopicSeparator + evt.Type
 	}
 
-	ami.subs = append(ami.subs, tSub)
-	ami.subsSujects = append(ami.subsSujects, ami.Subjects("requests", "*"))
-}
-
-func (ami *AMIClient) runEventFunc(ctx context.Context, fcallback nats.MsgHandler) {
-	logs.TLogger.Debug().Msgf("subscribing to %s", ami.Subjects("events", "*"))
-
-	tSub, err := ami.mbus.Subscribe(ami.Subjects("events", "*"), fcallback)
-	if err != nil {
-		logs.TLogger.Error().Msg(err.Error())
-
-		return
+	if node != nil {
+		subject = subject + ami.TopicSeparator + ami.Node.ID
+	} else {
+		subject = subject + ami.TopicSeparator + "*"
 	}
 
-	ami.subs = append(ami.subs, tSub)
-	ami.subsSujects = append(ami.subsSujects, ami.Subjects("events", "*"))
+	logs.TLogger.Debug().Msgf("subscribing to %s", subject)
+	sub, err = ami.mbus.Subscribe(subject, cb)
+	if err != nil {
+		return nil, err
+	}
+
+	ami.subs = append(ami.subs, sub)
+
+	return sub, nil
 }
 
-func (ami *AMIClient) SetAnnouceHandler(fcallback nats.MsgHandler) {
-	ami.natsfuncHandlerAnnouncement = fcallback
+// register handlers for invocation in the mediator
+func Register[TRequest any, TResult any](fcall RequestHandler[TRequest, TResult]) error {
+	k := key[TRequest, TResult]{}
+
+	_, existed := registeredHandlers.LoadOrStore(reflect.TypeOf(k), fcall)
+	if existed {
+		return errors.New("the provided type is already registered to a handler")
+	}
+
+	return nil
 }
 
-func (ami *AMIClient) SetRequestHandler(fcallback nats.MsgHandler) {
-	ami.natsfuncHandlerRequest = fcallback
-}
+// invoke a register handler
+func Invoke[TRequest any, TResult any](req TRequest) (TResult, error) {
+	var zeroRes TResult
+	var k key[TRequest, TResult]
 
-func (ami *AMIClient) SetEventsHandler(fcallback nats.MsgHandler) {
-	ami.natsfuncHandlerEvents = fcallback
+	handler, ok := registeredHandlers.Load(reflect.TypeOf(k))
+	if !ok {
+		return zeroRes, errors.New("could not find zeroRes handler for this function")
+	}
+
+	switch handler := handler.(type) {
+	case RequestHandler[TRequest, TResult]:
+		return handler(req)
+	}
+
+	return zeroRes, errors.New("Invalid handler")
 }
 
 // ----------------------------------------
@@ -311,33 +367,112 @@ func (ami *AMIClient) Listen(ctx context.Context) error {
 		return err
 	}
 
-	if ami.Node.Type != amitools.NodeType_PROXY {
-		ami.SetAnnouceHandler(ami.announceHandler)
-		ami.SetRequestHandler(ami.requestHandler)
-	}
+	switch ami.Node.Type {
+	case amitools.NodeType_PROXY:
+	case amitools.NodeType_CLIENT:
+		logs.TLogger.Debug().Msgf("subscribing to %s", ami.Subjects("announces", ami.Node.ID))
+		Sub, err := ami.mbus.Subscribe(ami.Subjects("announces", ami.Node.ID), ami.announceHandler)
+		if err != nil {
+			logs.TLogger.Error().Msg(err.Error())
 
-	if ami.natsfuncHandlerAnnouncement != nil {
-		ami.runAnnouncementFunc(context.Background(), ami.natsfuncHandlerAnnouncement)
-	}
+			return err
+		}
 
-	if ami.natsfuncHandlerRequest != nil {
-		ami.runRequestFunc(context.Background(), ami.natsfuncHandlerRequest)
-	}
+		ami.subs = append(ami.subs, Sub)
+	case amitools.NodeType_UNSPECIFIED:
+		err := errors.New("client type not specified")
+		if err != nil {
+			logs.TLogger.Error().Msg(err.Error())
 
-	if ami.natsfuncHandlerEvents != nil {
-		ami.runEventFunc(context.Background(), ami.natsfuncHandlerEvents)
-	}
-
-	for {
-		select {
-		case <-ami.shutdown:
-			return nil
+			return err
 		}
 	}
 
+	logs.TLogger.Debug().Msgf("subscribing to %s", ami.Subjects("requests", ami.Node.ID))
+	tSub, err := ami.mbus.Subscribe(ami.Subjects("requests", ami.Node.ID), func(msg *nats.Msg) {
+		logs.TLogger.Debug().Msgf("WE GOT %s from %s", msg.Data, msg.Reply)
+
+		req := &amitools.Request{}
+
+		err := json.Unmarshal(msg.Data, req)
+		if err != nil {
+			logs.TLogger.Error().Msgf(err.Error())
+
+			return
+		}
+
+		switch ami.Node.GetType() {
+		case amitools.NodeType_CLIENT:
+		case amitools.NodeType_PROXY:
+			ami.requests[req.ID] = req
+
+			if ami.amiRequestHandler != nil {
+				req, err = ami.amiRequestHandler(req)
+				if err != nil {
+					logs.TLogger.Error().Msgf(err.Error())
+
+					return
+				}
+			}
+		case amitools.NodeType_UNSPECIFIED:
+		}
+
+		data, err := json.Marshal(req)
+		if err != nil {
+			logs.TLogger.Error().Msg(err.Error())
+
+			return
+		}
+
+		ami.mbus.Publish(msg.Reply, data)
+	})
+	if err != nil {
+		logs.TLogger.Error().Msg(err.Error())
+
+		return err
+	}
+	ami.subs = append(ami.subs, tSub)
+
+	go func() {
+		for {
+			select {
+			case <-time.After(55 * time.Second):
+				for r, node := range ami.nodelist {
+
+					ami.mu.Lock()
+
+					switch node.Status {
+					case amitools.StatusType_DOWN:
+						delete(ami.nodelist, r)
+					case amitools.StatusType_UP:
+						node.Status = amitools.StatusType_DOWN
+
+						ami.nodelist[r] = node
+					case amitools.StatusType_UNKNOWN:
+						node.Status = amitools.StatusType_UNKNOWN
+
+						ami.nodelist[r] = node
+					}
+
+					ami.mu.Unlock()
+				}
+			case <-ami.shutdown:
+				return
+			}
+		}
+
+	}()
+
+	return nil
 }
 
 func (ami *AMIClient) Close() {
+
+	for _, sub := range ami.subs {
+		sub.Unsubscribe()
+		sub.Drain()
+	}
+
 	if ami.mbus != nil {
 		ami.mbus.Drain()
 		ami.mbus.Close()
@@ -355,7 +490,43 @@ func command(action string, id string, v ...interface{}) ([]byte, error) {
 	}{Action: action, ID: id, V: v})
 }
 
+func (ami *AMIClient) read(ctx context.Context, id string) (*responses.ResponseData, error) {
+
+	return nil, nil
+}
+
 func (ami *AMIClient) send(ctx context.Context, req *amitools.Request, node *amitools.Node) *responses.ResponseData {
+
+	data, err := json.Marshal(req)
+	if err != nil {
+		logs.TLogger.Error().Msg(err.Error())
+
+		return nil
+	}
+
+	natsConn := ami.GetNats()
+	if natsConn != nil {
+		logs.TLogger.Debug().Msgf("Request to %s ", ami.MBPrefix+"requests"+ami.TopicSeparator+node.ID)
+
+		resp, err := natsConn.Request(ami.MBPrefix+"requests"+ami.TopicSeparator+node.ID, data, 3*time.Second)
+		if err != nil {
+			logs.TLogger.Error().Msg(err.Error())
+
+			return nil
+		}
+
+		logs.TLogger.Debug().Msgf("Answer %s", resp.Data)
+
+		ami.requests[req.ID] = req
+
+		ret, err := ami.read(ctx, req.ID)
+		if err != nil {
+			return nil
+		}
+
+		return ret
+	}
+
 	return nil
 }
 
