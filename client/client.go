@@ -95,6 +95,41 @@ type RequestHandler[TRequest any, TResult any] func(req TRequest) (TResult, erro
 
 type AMIRequestHandler func(req *amitools.Request) (*amitools.Request, error)
 
+// OriginateData holds information used to originate outgoing calls.
+//
+//	Channel - Channel name to call.
+//	Exten - Extension to use (requires Context and Priority)
+//	Context - Context to use (requires Exten and Priority)
+//	Priority - Priority to use (requires Exten and Context)
+//	Application - Application to execute.
+//	Data - Data to use (requires Application).
+//	Timeout - How long to wait for call to be answered (in ms.).
+//	CallerID - Caller ID to be set on the outgoing channel.
+//	Variable - Channel variable to set, multiple Variable: headers are allowed.
+//	Account - Account code.
+//	EarlyMedia - Set to true to force call bridge on early media.
+//	Async - Set to true for fast origination.
+//	Codecs - Comma-separated list of codecs to use for this call.
+//	ChannelId - Channel UniqueId to be set on the channel.
+//	OtherChannelId - Channel UniqueId to be set on the second local channel.
+type OriginateData struct {
+	Channel        string   `ami:"Channel,omitempty"`
+	Exten          string   `ami:"Exten,omitempty"`
+	Context        string   `ami:"Context,omitempty"`
+	Priority       int      `ami:"Priority,omitempty"`
+	Application    string   `ami:"Application,omitempty"`
+	Data           string   `ami:"Data,omitempty"`
+	Timeout        int      `ami:"Timeout,omitempty"`
+	CallerID       string   `ami:"CallerID,omitempty"`
+	Variable       []string `ami:"Variable,omitempty"`
+	Account        string   `ami:"Account,omitempty"`
+	EarlyMedia     string   `ami:"EarlyMedia,omitempty"`
+	Async          string   `ami:"Async,omitempty"`
+	Codecs         string   `ami:"Codecs,omitempty"`
+	ChannelID      string   `ami:"ChannelId,omitempty"`
+	OtherChannelID string   `ami:"OtherChannelId,omitempty"`
+}
+
 func NewAmiClient(ctx context.Context, opts ...OptionFunc) *AMIClient {
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -252,6 +287,7 @@ func (ami *AMIClient) natsConnection(ctx context.Context) error {
 }
 
 func (ami *AMIClient) announceHandler(msg *nats.Msg) {
+	logs.TLogger.Debug().Msgf("GOT announce %s", msg.Data)
 	node := &amitools.Node{}
 
 	err := json.Unmarshal(msg.Data, node)
@@ -370,8 +406,8 @@ func (ami *AMIClient) Listen(ctx context.Context) error {
 	switch ami.Node.Type {
 	case amitools.NodeType_PROXY:
 	case amitools.NodeType_CLIENT:
-		logs.TLogger.Debug().Msgf("subscribing to %s", ami.Subjects("announces", ami.Node.ID))
-		Sub, err := ami.mbus.Subscribe(ami.Subjects("announces", ami.Node.ID), ami.announceHandler)
+		logs.TLogger.Debug().Msgf("subscribing to %s", ami.Subjects("announce", "*"))
+		Sub, err := ami.mbus.Subscribe(ami.Subjects("announce", "*"), ami.announceHandler)
 		if err != nil {
 			logs.TLogger.Error().Msg(err.Error())
 
@@ -495,7 +531,7 @@ func (ami *AMIClient) read(ctx context.Context, id string) (*responses.ResponseD
 	return nil, nil
 }
 
-func (ami *AMIClient) send(ctx context.Context, req *amitools.Request, node *amitools.Node) *responses.ResponseData {
+func (ami *AMIClient) send(ctx context.Context, req *amitools.Request, node *amitools.Node) *amitools.Request {
 
 	data, err := json.Marshal(req)
 	if err != nil {
@@ -515,16 +551,18 @@ func (ami *AMIClient) send(ctx context.Context, req *amitools.Request, node *ami
 			return nil
 		}
 
-		logs.TLogger.Debug().Msgf("Answer %s", resp.Data)
+		//logs.TLogger.Debug().Msgf("Answer %s", resp.Data)
 
-		ami.requests[req.ID] = req
+		p := &amitools.Request{}
 
-		ret, err := ami.read(ctx, req.ID)
+		err = json.Unmarshal(resp.Data, p)
 		if err != nil {
+			logs.TLogger.Error().Msg(err.Error())
+
 			return nil
 		}
 
-		return ret
+		return p
 	}
 
 	return nil
@@ -547,7 +585,7 @@ func (ami *AMIClient) createRequest(action string, id string, v ...interface{}) 
 	return p, nil
 }
 
-func (ami *AMIClient) CoreSettings(ctx context.Context, actionID string, node *amitools.Node) (*responses.ResponseData, error) {
+func (ami *AMIClient) CoreSettings(ctx context.Context, actionID string, node *amitools.Node) (*amitools.Request, error) {
 	var settings = struct{}{}
 
 	p, err := ami.createRequest("coresettings", actionID, settings)
@@ -556,14 +594,24 @@ func (ami *AMIClient) CoreSettings(ctx context.Context, actionID string, node *a
 	}
 
 	resp := ami.send(ctx, p, node)
-	if resp != nil && resp.GetType() == responses.Error {
-		err := fmt.Errorf("error: %s", resp.GetMessage())
-
-		logs.TLogger.Debug().Msg(err.Error())
-
-		return nil, err
-
-	}
 
 	return resp, nil
+}
+
+func (ami *AMIClient) Originate(ctx context.Context, actionID string, originate *OriginateData, node *amitools.Node) (*amitools.Request, error) {
+	p, err := ami.createRequest("Originate", actionID, originate)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := ami.send(ctx, p, node)
+
+	return resp, nil
+}
+
+func (ami *AMIClient) Hangup(ctx context.Context, actionID string, channel string, cause string) (*amitools.Request, error) {
+	channelMap := map[string]string{
+		"Channel": channel,
+		"Cause":   cause,
+	}
 }
